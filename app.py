@@ -10,7 +10,14 @@ import plotly.graph_objects as go
 from scipy.optimize import linprog
 import warnings
 import base64
+import io
+import datetime
 from pathlib import Path
+try:
+    from weasyprint import HTML as WeasyprintHTML
+    _WEASYPRINT_OK = True
+except ImportError:
+    _WEASYPRINT_OK = False
 warnings.filterwarnings('ignore')
 
 # ── Logo ───────────────────────────────────────────────────────────────────────
@@ -472,6 +479,359 @@ def make_frontier(frontier_df, scenarios):
     return fig
 
 
+# ── Export helpers ─────────────────────────────────────────────────────────────
+def generate_summary_html(client_name, account_num, total_value,
+                          lt_unreal, st_unreal, net_unreal, scenarios, logo_b64=None):
+    """Return a self-contained HTML bytes object that looks like the dashboard.
+    User opens in browser → Ctrl+P → Save as PDF (landscape) for a pixel-perfect export."""
+
+    _NAVY    = '#263759'
+    _COPPER  = '#C17A49'
+    _GREEN   = '#5D6B49'
+    _RED     = '#A93226'
+    _GRAY    = '#6B6B6B'
+    _LIGHT   = '#F4F4F5'
+    _WHITE   = '#FFFFFF'
+    _BORDER  = '#C8D0D8'
+    _DIVIDER = '#E2E8EE'
+
+    def _gl_color(v): return _GREEN if v >= 0 else _RED
+    def _fmt_gl(v):   return ('+' if v >= 0 else '-') + f'${abs(v):,.0f}'
+
+    def _svg_donut(pct, color, size=150):
+        import math
+        R  = 46
+        cx = cy = size / 2
+        C  = 2 * math.pi * R
+        filled = max(pct, 0.5) / 100 * C
+        empty  = C - filled
+        offset = C * 0.25   # start arc from 12 o'clock
+        return (
+            f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">'
+            f'<circle cx="{cx}" cy="{cy}" r="{R}" fill="none"'
+            f' stroke="#DDE3EA" stroke-width="17"/>'
+            f'<circle cx="{cx}" cy="{cy}" r="{R}" fill="none"'
+            f' stroke="{color}" stroke-width="17"'
+            f' stroke-dasharray="{filled:.2f} {empty:.2f}"'
+            f' stroke-dashoffset="{offset:.2f}"'
+            f' transform="rotate(-90 {cx} {cy})"/>'
+            f'<text x="{cx}" y="{cy + 8}" text-anchor="middle"'
+            f' font-family="sans-serif" font-size="24" font-weight="bold"'
+            f' fill="#1C2833">{pct:.0f}%</text>'
+            f'</svg>'
+        )
+
+    # ── Logo tag ────────────────────────────────────────────────────────────
+    logo_tag = (f'<img src="data:image/png;base64,{logo_b64}"'
+                f' style="height:64px;object-fit:contain;"/>'
+                if logo_b64 else
+                f'<span style="font-size:18px;font-weight:900;color:{_NAVY};'
+                f'letter-spacing:2px;">BISON WEALTH</span>')
+
+    # ── Metrics ─────────────────────────────────────────────────────────────
+    metrics = [
+        ('Portfolio Value',      f'${total_value:,.0f}',   _NAVY),
+        ('LT Unrealized G/L',    _fmt_gl(lt_unreal),       _gl_color(lt_unreal)),
+        ('ST Unrealized G/L',    _fmt_gl(st_unreal),       _gl_color(st_unreal)),
+        ('Total Unrealized G/L', _fmt_gl(net_unreal),      _gl_color(net_unreal)),
+    ]
+    metric_html = ''.join(f'''
+      <div style="background:{_WHITE};border:1px solid {_BORDER};border-radius:5px;
+                  padding:14px 16px;flex:1;min-width:0;">
+        <div style="font-size:10px;color:{_GRAY};font-weight:700;
+                    text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">{lbl}</div>
+        <div style="font-size:22px;font-weight:700;color:{col};">{val}</div>
+      </div>''' for lbl, val, col in metrics)
+
+    # ── Scenario cards ───────────────────────────────────────────────────────
+    def _stat_row(label, value, color, divider=True):
+        hr = f'<hr style="border:none;border-top:1px solid {_DIVIDER};margin:8px 0;"/>' if divider else ''
+        return f'''
+        <div style="text-align:center;padding:4px 0 2px 0;">
+          <div style="font-size:10px;color:{_GRAY};font-weight:700;
+                      text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;">{label}</div>
+          <div style="font-size:22px;font-weight:700;color:{color};">{value}</div>
+        </div>{hr}'''
+
+    cards_html = ''
+    for sc in scenarios:
+        tx_color = _RED   if sc['net_tax']    > 0  else _GREEN
+        gl_color = _GREEN if sc['realized_gl'] <= 0 else _RED
+        gl_sign  = '+' if sc['realized_gl'] > 0 else ''
+        cards_html += f'''
+      <div style="flex:1;min-width:0;border-radius:5px;overflow:hidden;
+                  border:1px solid {_BORDER};display:flex;flex-direction:column;">
+        <div style="background:{sc['color']};color:{_WHITE};text-align:center;
+                    padding:11px;font-weight:700;font-size:13px;letter-spacing:1.5px;">
+          {sc['name'].upper()}
+        </div>
+        <div style="background:{_WHITE};padding:14px 16px;">
+          {_stat_row('Estimated Tax Liability', f"${sc['net_tax']:,.0f}", tx_color)}
+          {_stat_row('Realized Gain / Loss', f"{gl_sign}${sc['realized_gl']:,.0f}", gl_color)}
+          {_stat_row('Transition Amount', f"${sc['proceeds']:,.0f}", _NAVY, divider=False)}
+        </div>
+        <div style="background:{_WHITE};border-top:1px solid {_DIVIDER};
+                    text-align:center;padding:10px 0 18px 0;flex:1;">
+          <div style="font-size:9px;color:{_GRAY};font-weight:700;
+                      text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">
+            Target Alignment After Transition
+          </div>
+          {_svg_donut(sc['alignment'], sc['color'])}
+        </div>
+      </div>'''
+
+    today = datetime.date.today().strftime('%B %d, %Y')
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: {_LIGHT}; font-family: -apple-system, Arial, sans-serif;
+          padding: 0; }}
+  @media print {{
+    body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    @page {{ margin: 0.4in; size: landscape; }}
+  }}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div style="background:{_WHITE};border-bottom:3px solid {_COPPER};
+            padding:14px 24px;display:flex;justify-content:space-between;
+            align-items:center;margin-bottom:20px;">
+  <div>{logo_tag}</div>
+  <div style="text-align:center;">
+    <div style="font-size:24px;font-weight:800;color:{_NAVY};">Portfolio Transition Optimizer</div>
+    <div style="font-size:13px;color:{_GRAY};margin-top:4px;">Tax-Efficient Rebalancing Analysis</div>
+  </div>
+  <div style="text-align:right;">
+    <div style="font-size:15px;font-weight:700;color:{_NAVY};">{client_name}</div>
+    <div style="font-size:12px;color:{_GRAY};margin-top:3px;">Acct {account_num} &nbsp;·&nbsp; {today}</div>
+  </div>
+</div>
+
+<!-- Metrics -->
+<div style="display:flex;gap:10px;padding:0 24px;margin-bottom:20px;">
+  {metric_html}
+</div>
+
+<!-- Scenario cards -->
+<div style="display:flex;gap:14px;padding:0 24px;margin-bottom:20px;">
+  {cards_html}
+</div>
+
+<!-- Footer -->
+<div style="text-align:center;color:{_GRAY};font-size:10px;font-style:italic;
+            padding:0 24px 20px 24px;">
+  Illustrative purposes only. Tax estimates are approximations and may differ from actual liability.
+  Consult a qualified tax advisor before transacting.
+</div>
+
+</body>
+</html>"""
+
+    return html.encode('utf-8')
+
+    # ── Header (white, gold bottom border) ──────────────────────────────────
+    ax_hdr = fig.add_axes([0, 0.905, 1.0, 0.095])
+    ax_hdr.set_facecolor(_WHITE)
+    ax_hdr.axis('off')
+    ax_hdr.axhline(y=0, color=_COPPER, linewidth=5, xmin=0, xmax=1)
+
+    # Logo top-left
+    logo_placed = False
+    if logo_path and Path(logo_path).exists():
+        try:
+            logo_img = plt.imread(str(logo_path))
+            imagebox = OffsetImage(logo_img, zoom=0.11)
+            ab = AnnotationBbox(imagebox, (0.075, 0.52),
+                                frameon=False, xycoords='axes fraction',
+                                box_alignment=(0.5, 0.5))
+            ax_hdr.add_artist(ab)
+            logo_placed = True
+        except Exception:
+            pass
+    if not logo_placed:
+        ax_hdr.text(0.02, 0.52, 'BISON WEALTH', color=_NAVY,
+                    fontsize=13, fontweight='black', transform=ax_hdr.transAxes, va='center')
+
+    # Centre title
+    ax_hdr.text(0.5, 0.70, 'Portfolio Transition Optimizer',
+                color=_NAVY, fontsize=19, fontweight='bold',
+                ha='center', va='center', transform=ax_hdr.transAxes)
+    ax_hdr.text(0.5, 0.25, 'Tax-Efficient Rebalancing Analysis',
+                color=_GRAY, fontsize=10,
+                ha='center', va='center', transform=ax_hdr.transAxes)
+
+    # Client info top-right
+    ax_hdr.text(0.985, 0.70, client_name,
+                color=_NAVY, fontsize=12, fontweight='bold',
+                ha='right', va='center', transform=ax_hdr.transAxes)
+    ax_hdr.text(0.985, 0.25,
+                f'Acct {account_num}  ·  {datetime.date.today().strftime("%B %d, %Y")}',
+                color=_GRAY, fontsize=9,
+                ha='right', va='center', transform=ax_hdr.transAxes)
+
+    # ── Metric boxes ────────────────────────────────────────────────────────
+    metrics = [
+        ('Portfolio Value',      f'${total_value:,.0f}',                                   _NAVY),
+        ('LT Unrealized G/L',    ('+' if lt_unreal  >= 0 else '-') + f'${abs(lt_unreal):,.0f}',  _GREEN if lt_unreal  >= 0 else _RED),
+        ('ST Unrealized G/L',    ('+' if st_unreal  >= 0 else '-') + f'${abs(st_unreal):,.0f}',  _GREEN if st_unreal  >= 0 else _RED),
+        ('Total Unrealized G/L', ('+' if net_unreal >= 0 else '-') + f'${abs(net_unreal):,.0f}', _GREEN if net_unreal >= 0 else _RED),
+    ]
+    MBW = 0.236   # metric box width
+    MBH = 0.082   # metric box height
+    MBY = 0.808   # metric boxes y (bottom)
+    MGP = 0.009   # gap between metric boxes
+    for i, (label, value, vcolor) in enumerate(metrics):
+        bx = 0.013 + i * (MBW + MGP)
+        ax = fig.add_axes([bx, MBY, MBW, MBH])
+        ax.set_facecolor(_WHITE)
+        for sp in ax.spines.values():
+            sp.set_edgecolor(_BORDER); sp.set_linewidth(0.8)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.text(0.05, 0.72, label, color=_GRAY, fontsize=8.5, fontweight='bold',
+                transform=ax.transAxes, va='center')
+        ax.text(0.05, 0.25, value, color=vcolor, fontsize=16, fontweight='bold',
+                transform=ax.transAxes, va='center')
+
+    # ── Scenario cards ──────────────────────────────────────────────────────
+    CW   = 0.320   # card width
+    CGP  = 0.013   # gap
+    CX   = [0.013 + i * (CW + CGP) for i in range(3)]
+
+    # Vertical zones (figure coords, bottom=0)
+    HDR_Y = 0.740; HDR_H = 0.054      # coloured title strip
+    SBY   = 0.415; SBH   = 0.325      # white stats body  (sits below header)
+    LBY   = 0.375; LBH   = 0.033      # "TARGET ALIGNMENT" label row
+    DNY   = 0.065; DNH   = 0.305      # donut area (frameless)
+
+    for i, sc in enumerate(scenarios):
+        cx = CX[i]
+
+        # Coloured header strip
+        ax_sh = fig.add_axes([cx, HDR_Y, CW, HDR_H])
+        ax_sh.set_facecolor(sc['color'])
+        ax_sh.axis('off')
+        ax_sh.text(0.5, 0.5, sc['name'].upper(),
+                   color=_WHITE, fontsize=12, fontweight='bold',
+                   ha='center', va='center', transform=ax_sh.transAxes)
+
+        # White stats body
+        ax_sb = fig.add_axes([cx, SBY, CW, SBH])
+        ax_sb.set_facecolor(_WHITE)
+        for sp in ax_sb.spines.values():
+            sp.set_edgecolor(_BORDER); sp.set_linewidth(0.8)
+        ax_sb.set_xticks([]); ax_sb.set_yticks([])
+
+        tax_color = _RED   if sc['net_tax']    > 0  else _GREEN
+        gl_color  = _GREEN if sc['realized_gl'] <= 0 else _RED
+        gl_sign   = '+' if sc['realized_gl'] > 0 else ''
+        stat_rows = [
+            ('ESTIMATED TAX LIABILITY', f"${sc['net_tax']:,.0f}",              tax_color),
+            ('REALIZED GAIN / LOSS',    f"{gl_sign}${sc['realized_gl']:,.0f}", gl_color),
+            ('TRANSITION AMOUNT',       f"${sc['proceeds']:,.0f}",             _NAVY),
+        ]
+        for j, (lbl, val, col) in enumerate(stat_rows):
+            y_lbl = 0.87 - j * 0.295
+            y_val = y_lbl - 0.10
+            ax_sb.text(0.5, y_lbl, lbl, color=_GRAY, fontsize=7.5, fontweight='bold',
+                       ha='center', va='center', transform=ax_sb.transAxes)
+            ax_sb.text(0.5, y_val, val, color=col, fontsize=18, fontweight='bold',
+                       ha='center', va='center', transform=ax_sb.transAxes)
+            if j < 2:
+                ax_sb.axhline(y=y_val - 0.095, color=_DIVIDER,
+                              linewidth=0.8, xmin=0.04, xmax=0.96)
+
+        # "TARGET ALIGNMENT" label — frameless
+        ax_lbl = fig.add_axes([cx, LBY, CW, LBH])
+        ax_lbl.set_facecolor(_LIGHT)
+        ax_lbl.axis('off')
+        ax_lbl.text(0.5, 0.5, 'TARGET ALIGNMENT AFTER TRANSITION',
+                    color=_GRAY, fontsize=7.5, fontweight='bold',
+                    ha='center', va='center', transform=ax_lbl.transAxes)
+
+        # Donut — no frame, no axes, just the pie
+        pad = CW * 0.18
+        ax_pie = fig.add_axes([cx + pad, DNY, CW - 2*pad, DNH])
+        ax_pie.set_aspect('equal')
+        ax_pie.axis('off')
+        pct = float(sc['alignment'])
+        ax_pie.pie(
+            [max(pct, 0.5), max(100 - pct, 0)],
+            colors=[sc['color'], '#DDE3EA'],
+            startangle=90, counterclock=False,
+            wedgeprops=dict(width=0.40, edgecolor=_WHITE, linewidth=3),
+        )
+        ax_pie.text(0, 0, f'{pct:.0f}%',
+                    ha='center', va='center',
+                    fontsize=20, fontweight='bold', color='#1C2833')
+
+    # ── Footer ──────────────────────────────────────────────────────────────
+    ax_ft = fig.add_axes([0, 0, 1.0, 0.055])
+    ax_ft.set_facecolor(_LIGHT)
+    ax_ft.axis('off')
+    ax_ft.text(0.5, 0.5,
+               'Illustrative purposes only. Tax estimates are approximations and may differ from actual liability. '
+               'Consult a qualified tax advisor before transacting.',
+               color=_GRAY, fontsize=8, ha='center', va='center',
+               transform=ax_ft.transAxes, style='italic')
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+                facecolor=_LIGHT, edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def generate_summary_pdf(client_name, account_num, total_value,
+                         lt_unreal, st_unreal, net_unreal, scenarios, logo_b64=None):
+    """Convert the summary HTML to a PDF using WeasyPrint and return bytes."""
+    html_bytes = generate_summary_html(client_name, account_num, total_value,
+                                       lt_unreal, st_unreal, net_unreal,
+                                       scenarios, logo_b64=logo_b64)
+    return WeasyprintHTML(string=html_bytes.decode('utf-8')).write_pdf()
+
+
+def generate_trades_excel(scenario, account_num, holdings_df):
+    """Build a trade order sheet: Account ID, Action, Ticker, Shares."""
+    price_lookup = {str(r['Ticker']).strip(): float(r['Price'])
+                    for _, r in holdings_df.iterrows()}
+    rows = []
+    # Sells — dollar amount = shares sold × price
+    for i, row in holdings_df.iterrows():
+        frac = float(scenario['sell_fracs'][i])
+        if frac < 0.005:
+            continue
+        amount = round(frac * float(row['Shares']) * float(row['Price']), 2)
+        rows.append({
+            'Account ID': account_num,
+            'Action':     'Sell',
+            'Ticker':     str(row['Ticker']).strip(),
+            'Amount ($)': amount,
+        })
+    # Buys — dollar amount comes directly from the optimizer output
+    buy_df = scenario.get('buys')
+    if buy_df is not None and not buy_df.empty:
+        for _, brow in buy_df.iterrows():
+            rows.append({
+                'Account ID': account_num,
+                'Action':     'Buy',
+                'Ticker':     str(brow['Ticker']).strip(),
+                'Amount ($)': round(float(brow['Buy Value']), 2),
+            })
+    df = pd.DataFrame(rows, columns=['Account ID', 'Action', 'Ticker', 'Amount ($)'])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Trades')
+    buf.seek(0)
+    return buf.read()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -545,6 +905,9 @@ with st.sidebar:
     data_source = st.radio("Source", ["Use dummy data", "Upload file", "Edit table"],
                            label_visibility="collapsed")
 
+    # Initialize flag to prevent NameError
+    _edit_holdings = False 
+
     if data_source == "Upload file":
         st.caption("Columns: Ticker, Units, Price, Cost Per Share, "
                    "Market Value, Short Term Gain Loss, Long Term Gain Loss")
@@ -574,11 +937,12 @@ with st.sidebar:
                 raw = pd.read_csv(uploaded, skiprows=header_row)
         else:
             raw = DEFAULT_HOLDINGS.copy()
+            
     elif data_source == "Edit table":
         _edit_holdings = True
-        raw = DEFAULT_HOLDINGS.copy()  # placeholder, overridden in main area
+        raw = DEFAULT_HOLDINGS.copy() 
     else:
-        _edit_holdings = False
+        # Default/Dummy data case
         raw = DEFAULT_HOLDINGS.copy()
 
 
@@ -793,6 +1157,35 @@ for col, sc in zip(cols, scenarios):
         st.plotly_chart(make_donut(sc['alignment'], sc['color']),
                         use_container_width=True, config={'staticPlot': True})
 
+# ── Export summary ─────────────────────────────────────────────────────────────
+st.markdown("<br>", unsafe_allow_html=True)
+if scenarios:
+    if _WEASYPRINT_OK:
+        pdf_bytes = generate_summary_pdf(
+            client_name, account_num, TOTAL_VALUE,
+            lt_unrealized, st_unrealized, net_unrealized, scenarios,
+            logo_b64=_logo_b64,
+        )
+        st.download_button(
+            label="Export Summary (PDF)",
+            data=pdf_bytes,
+            file_name=f"transition_summary_{client_name.replace(' ','_')}.pdf",
+            mime="application/pdf",
+        )
+    else:
+        html_bytes = generate_summary_html(
+            client_name, account_num, TOTAL_VALUE,
+            lt_unrealized, st_unrealized, net_unrealized, scenarios,
+            logo_b64=_logo_b64,
+        )
+        st.download_button(
+            label="Export Summary (HTML — open in browser, Ctrl+P to save as PDF)",
+            data=html_bytes,
+            file_name=f"transition_summary_{client_name.replace(' ','_')}.html",
+            mime="text/html",
+        )
+        st.caption("Install WeasyPrint for one-click PDF: `conda install -c conda-forge weasyprint`")
+
 st.divider()
 
 # ── Trade-level detail ─────────────────────────────────────────────────────────
@@ -863,6 +1256,24 @@ for tab, sc in zip(tabs, scenarios):
                 else:
                     st.info("No buys needed — portfolio already aligned with target model.")
 
+
+# ── Export trades ──────────────────────────────────────────────────────────────
+if scenarios:
+    st.divider()
+    exp_c1, exp_c2 = st.columns([2, 3])
+    with exp_c1:
+        sc_names  = [sc['name'] for sc in scenarios]
+        sc_choice = st.selectbox("Scenario", sc_names, label_visibility="collapsed")
+    with exp_c2:
+        sc_sel      = next(sc for sc in scenarios if sc['name'] == sc_choice)
+        excel_bytes = generate_trades_excel(sc_sel, account_num, holdings)
+        st.download_button(
+            label=f"Export Trades — {sc_choice} (Excel)",
+            data=excel_bytes,
+            file_name=f"trades_{sc_choice.replace(' ','_')}_{account_num}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown(f"""
