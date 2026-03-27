@@ -347,6 +347,77 @@ def compute_frontier(holdings_df, max_tax, target_model_df=None, total_value=Non
     return pd.DataFrame(points).drop_duplicates('transition_pct').reset_index(drop=True)
 
 
+def simulate_transition_timeline(holdings_df, annual_budget, target_model_df=None,
+                                 total_value=None, max_years=25):
+    """Simulate year-by-year transitions using a fixed annual tax budget.
+    Returns a list of dicts: year, cumulative_pct, remaining_gains, tax_incurred, proceeds."""
+    if holdings_df.empty or annual_budget <= 0:
+        return []
+    current = holdings_df.reset_index(drop=True).copy()
+    tv = total_value if total_value is not None else float(current['MarketValue'].sum())
+    if tv <= 0:
+        return []
+    # cum_remaining[i] = fraction of original holding i still held
+    cum_remaining = np.ones(len(current))
+    current['_orig_idx'] = np.arange(len(current))
+
+    initial_gains = float(current['UnrealizedGL'].clip(lower=0).sum())
+    zero_fracs    = np.zeros(len(current))
+    init_almt     = (alignment_score(current.drop(columns=['_orig_idx']), zero_fracs, target_model_df, tv)
+                     if target_model_df is not None and not target_model_df.empty else 0.0)
+
+    results = [{'year': 0, 'alignment_pct': init_almt,
+                'remaining_gains': initial_gains, 'tax_incurred': 0.0, 'proceeds': 0.0}]
+
+    original = current.drop(columns=['_orig_idx']).copy()
+
+    for year in range(1, max_years + 1):
+        if current.empty or float(current['MarketValue'].sum()) < 100:
+            break
+        solve_df = current.drop(columns=['_orig_idx'])
+        r = solve_transition(solve_df, annual_budget, target_model_df, tv)
+        if r is None or float(np.sum(r['sell_fracs'])) < 1e-6:
+            break
+
+        sf       = np.array(r['sell_fracs'])
+        orig_idx = current['_orig_idx'].values
+
+        # Update cumulative remaining fractions mapped back to original rows
+        for j, oi in enumerate(orig_idx):
+            cum_remaining[oi] *= (1.0 - float(sf[j]))
+
+        # Alignment: same math as the donut cards — alignment_score on original holdings
+        # with cumulative sell fracs, so Year 1 always matches the Custom scenario card
+        cum_sell = 1.0 - cum_remaining
+        almt = (alignment_score(original, cum_sell, target_model_df, tv)
+                if target_model_df is not None and not target_model_df.empty
+                else float(np.dot(cum_sell, original['MarketValue'].values)
+                           / float(original['MarketValue'].sum()) * 100))
+
+        # Scale current rows down and drop fully-sold ones
+        remaining_arr = 1.0 - sf
+        for col in ['Shares', 'MarketValue', 'UnrealizedGL', 'MaxTax']:
+            if col in current.columns:
+                current[col] = current[col].values * remaining_arr
+        current = current[remaining_arr > 0.001].reset_index(drop=True)
+
+        remaining_gains = (float(current['UnrealizedGL'].clip(lower=0).sum())
+                           if not current.empty else 0.0)
+
+        results.append({
+            'year':            year,
+            'alignment_pct':   almt,
+            'remaining_gains': remaining_gains,
+            'tax_incurred':    r['net_tax'],
+            'proceeds':        r['proceeds'],
+        })
+
+        if almt >= 99.9 or current.empty:
+            break
+
+    return results
+
+
 def compute_buys(holdings_df, sell_fracs, target_model_df, total_portfolio_value):
     """
     Given sell fractions and a target model, compute buy trades.
@@ -475,6 +546,59 @@ def make_frontier(frontier_df, scenarios):
         legend=dict(orientation='h', yanchor='bottom', y=1.02,
                     xanchor='right', x=1, font=dict(size=11)),
         margin=dict(l=70, r=20, t=10, b=50), hovermode='closest',
+    )
+    return fig
+
+
+def make_timeline_chart(timeline_data, annual_budget):
+    years      = [d['year']            for d in timeline_data]
+    cum_pcts   = [d['alignment_pct']   for d in timeline_data]
+    rem_gains  = [d['remaining_gains'] for d in timeline_data]
+
+    fig = go.Figure()
+
+    # Left axis: % transitioned (area)
+    fig.add_trace(go.Scatter(
+        x=years, y=cum_pcts,
+        name='% Transitioned',
+        fill='tozeroy',
+        fillcolor='rgba(38,55,89,0.15)',
+        line=dict(color=NAVY, width=2.5),
+        mode='lines+markers',
+        marker=dict(size=7, color=NAVY),
+        yaxis='y1',
+        hovertemplate='Year %{x}<br>Transitioned: %{y:.1f}%<extra></extra>',
+    ))
+
+    # Right axis: remaining cap gains (dollars)
+    fig.add_trace(go.Scatter(
+        x=years, y=rem_gains,
+        name='Remaining Cap Gains',
+        line=dict(color=COPPER, width=2.5),
+        mode='lines+markers',
+        marker=dict(size=7, color=COPPER),
+        yaxis='y2',
+        hovertemplate='Year %{x}<br>Remaining Gains: $%{y:,.0f}<extra></extra>',
+    ))
+
+    fig.update_layout(
+        xaxis=dict(title='Year', tickmode='linear', tick0=0, dtick=1,
+                   gridcolor='#E8ECF0', linecolor='#D5DADE', zeroline=False,
+                   range=[years[0] - 0.3, years[-1] + 0.3]),
+        yaxis=dict(title=dict(text='% Transitioned', font=dict(color=NAVY)),
+                   ticksuffix='%', range=[-3, 108], gridcolor='#E8ECF0',
+                   linecolor='#D5DADE', zeroline=False, tickfont=dict(color=NAVY)),
+        yaxis2=dict(title=dict(text='Remaining Cap Gains ($)', font=dict(color=COPPER)),
+                    tickprefix='$', tickformat=',.0f', overlaying='y', side='right',
+                    zeroline=False, tickfont=dict(color=COPPER), showgrid=False,
+                    rangemode='nonnegative'),
+        height=340,
+        plot_bgcolor=WHITE,
+        paper_bgcolor=LIGHT,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    font=dict(size=11)),
+        margin=dict(l=60, r=80, t=10, b=0),
+        hovermode='x unified',
     )
     return fig
 
@@ -1185,6 +1309,28 @@ if scenarios:
             mime="text/html",
         )
         st.caption("Install WeasyPrint for one-click PDF: `conda install -c conda-forge weasyprint`")
+
+st.divider()
+
+# ── Transition Timeline ────────────────────────────────────────────────────────
+st.subheader("Transition Timeline")
+st.caption(f"How long to fully transition the account at ${custom_budget:,.0f}/yr tax budget")
+timeline_data = simulate_transition_timeline(
+    holdings, float(custom_budget), target_model, TOTAL_VALUE
+)
+if timeline_data:
+    total_years = len(timeline_data) - 1  # exclude Year 0 baseline
+    fully_done  = timeline_data[-1]['alignment_pct'] >= 99.9
+    total_tax   = sum(d['tax_incurred'] for d in timeline_data)
+    tl_c1, tl_c2, tl_c3 = st.columns(3)
+    tl_c1.metric("Years to Full Transition" if fully_done else "Years Simulated",
+                 f"{total_years} yr{'s' if total_years != 1 else ''}")
+    tl_c2.metric("Cumulative Tax Over Period", f"${total_tax:,.0f}")
+    tl_c3.metric("Final Alignment", f"{timeline_data[-1]['alignment_pct']:.0f}%")
+    st.plotly_chart(make_timeline_chart(timeline_data, float(custom_budget)),
+                    use_container_width=True, config={'displayModeBar': False})
+else:
+    st.info("Enter a tax budget greater than $0 in the sidebar to see the transition timeline.")
 
 st.divider()
 
