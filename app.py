@@ -99,14 +99,18 @@ def load_preset_models():
     if not path.exists():
         return {}
     raw = pd.read_excel(path, header=None)
-    models = {}
-    # Row 0 = model names, Row 1 = "Holding"/"Weight" headers, Rows 2+ = data
+    # Row 0 = category, Row 1 = model name, Row 2 = headers, Rows 3+ = data
     # Columns are in pairs: (ticker_col, weight_col) starting at col 1
+    models = {}
+    current_category = "Other"
     col_idx = 1
     while col_idx < raw.shape[1]:
-        name = str(raw.iloc[0, col_idx]).strip()
+        cat  = str(raw.iloc[0, col_idx]).strip()
+        name = str(raw.iloc[1, col_idx]).strip()
+        if cat and cat != 'nan':
+            current_category = cat
         if name and name != 'nan':
-            slice_df = raw.iloc[2:, col_idx:col_idx+2].copy()
+            slice_df = raw.iloc[3:, col_idx:col_idx+2].copy()
             slice_df.columns = ['Ticker', 'Weight']
             slice_df['Ticker'] = slice_df['Ticker'].astype(str).str.strip()
             slice_df['Weight'] = pd.to_numeric(slice_df['Weight'], errors='coerce')
@@ -117,10 +121,9 @@ def load_preset_models():
                 slice_df['Weight'].notna()
             ].copy()
             df = df.reset_index(drop=True)
-            # Normalise weights to sum to 1
             if df['Weight'].sum() > 0:
                 df['Weight'] = df['Weight'] / df['Weight'].sum()
-            models[name] = df
+            models.setdefault(current_category, {})[name] = df
         col_idx += 2
     return models
 
@@ -1029,12 +1032,18 @@ with st.sidebar:
     st.divider()
     st.subheader("Target Model")
 
-    model_options = list(PRESET_MODELS.keys()) + ["Upload custom", "Build custom"]
-    selected_model_name = st.selectbox("Select model", model_options,
-                                       label_visibility="collapsed")
+    category_options = list(PRESET_MODELS.keys()) + ["Upload custom", "Build custom"]
+    selected_category = st.selectbox("Category", category_options,
+                                     label_visibility="collapsed")
+
+    selected_model_name = selected_category  # default for non-preset paths
+    if selected_category not in ("Upload custom", "Build custom"):
+        model_options = list(PRESET_MODELS.get(selected_category, {}).keys())
+        selected_model_name = st.selectbox("Model", model_options,
+                                           label_visibility="collapsed")
 
     _edit_model = False
-    if selected_model_name == "Upload custom":
+    if selected_category == "Upload custom":
         st.download_button(
             "Download template",
             data=_make_model_template(),
@@ -1052,13 +1061,13 @@ with st.sidebar:
         else:
             target_model = None
 
-    elif selected_model_name == "Build custom":
+    elif selected_category == "Build custom":
         st.caption("Edit tickers and weights in the table below.")
         _edit_model = True
         target_model = None  # set in main area below
 
     else:
-        target_model = PRESET_MODELS.get(selected_model_name)
+        target_model = PRESET_MODELS.get(selected_category, {}).get(selected_model_name)
 
     # Show model summary
     if target_model is not None and not target_model.empty:
