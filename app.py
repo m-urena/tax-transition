@@ -956,6 +956,43 @@ def generate_trades_excel(scenario, account_num, holdings_df):
     return buf.read()
 
 
+# ── Template helpers ──────────────────────────────────────────────────────────
+def _make_holdings_template() -> bytes:
+    """Return an Excel file (bytes) users can fill in for the simple holdings format."""
+    rows = [
+        {'Ticker': 'AAPL',  'Shares': 100,  'Price': 195.50, 'Cost_Basis': 120.00, 'Holding': 'LT'},
+        {'Ticker': 'MSFT',  'Shares': 50,   'Price': 415.00, 'Cost_Basis': 380.00, 'Holding': 'LT'},
+        {'Ticker': 'TSLA',  'Shares': 30,   'Price': 175.00, 'Cost_Basis': 210.00, 'Holding': 'ST'},
+    ]
+    df = pd.DataFrame(rows)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Holdings')
+        ws = writer.sheets['Holdings']
+        ws.column_dimensions['A'].width = 10
+        for col in ['B', 'C', 'D']:
+            ws.column_dimensions[col].width = 12
+        ws.column_dimensions['E'].width = 10
+    return buf.getvalue()
+
+
+def _make_model_template() -> bytes:
+    """Return an Excel file (bytes) for the target model format."""
+    rows = [
+        {'Ticker': 'AAPL', 'Weight': 0.05},
+        {'Ticker': 'MSFT', 'Weight': 0.05},
+        {'Ticker': 'GOOGL', 'Weight': 0.05},
+    ]
+    df = pd.DataFrame(rows)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Model')
+        ws = writer.sheets['Model']
+        ws.column_dimensions['A'].width = 10
+        ws.column_dimensions['B'].width = 10
+    return buf.getvalue()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -998,7 +1035,12 @@ with st.sidebar:
 
     _edit_model = False
     if selected_model_name == "Upload custom":
-        st.caption("Columns: Ticker, Weight (or Allocation)")
+        st.download_button(
+            "Download template",
+            data=_make_model_template(),
+            file_name="model_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
         model_file = st.file_uploader("Model file", type=["csv", "xlsx", "xls"],
                                       label_visibility="collapsed")
         if model_file:
@@ -1033,8 +1075,12 @@ with st.sidebar:
     _edit_holdings = False 
 
     if data_source == "Upload file":
-        st.caption("Columns: Ticker, Units, Price, Cost Per Share, "
-                   "Market Value, Short Term Gain Loss, Long Term Gain Loss")
+        st.download_button(
+            "Download template",
+            data=_make_holdings_template(),
+            file_name="holdings_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
         uploaded = st.file_uploader("Holdings file", type=["csv", "xlsx", "xls"],
                                     label_visibility="collapsed")
         if uploaded:
@@ -1084,7 +1130,6 @@ if _edit_holdings:
         st.session_state.holdings_df.insert(0, '_sel', False)
 
     st.subheader("Edit Holdings")
-    st.caption("Check rows to select them, then click **Delete Selected** to remove. Click **+ Add Row** to add a position.")
     _HOLDINGS_CFG = {
         "_sel":       st.column_config.CheckboxColumn("✓",        width="small"),
         "Ticker":     st.column_config.TextColumn("Ticker",        width="medium"),
@@ -1352,7 +1397,7 @@ for tab, sc in zip(tabs, scenarios):
                 shares_sold = frac * float(row['Shares'])
                 proceeds    = shares_sold * float(row['Price'])
                 realized_gl = float(row['UnrealizedGL']) * frac
-                tax_impact  = max(0.0, realized_gl) * float(row['TaxRate'])
+                tax_impact  = realized_gl * float(row['TaxRate'])
                 sell_rows.append({
                     'Ticker':       row['Ticker'],
                     'Lot':          row['Holding'],
@@ -1369,7 +1414,7 @@ for tab, sc in zip(tabs, scenarios):
                     .format({'Sell %': '{:.1f}%', 'Shares Sold': '{:.2f}',
                              'Proceeds': '${:,.0f}', 'Realized G/L': '${:,.0f}',
                              'Tax Impact': '${:,.0f}'})
-                    .applymap(
+                    .map(
                         lambda v: f'color:{GREEN}' if isinstance(v, (int,float)) and v < 0
                         else (f'color:{RED}' if isinstance(v, (int,float)) and v > 0 else ''),
                         subset=['Realized G/L', 'Tax Impact'],
