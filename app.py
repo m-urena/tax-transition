@@ -13,10 +13,6 @@ import base64
 import io
 import datetime
 from pathlib import Path
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 try:
     from weasyprint import HTML as WeasyprintHTML
     _WEASYPRINT_OK = True
@@ -748,6 +744,11 @@ def generate_summary_html(client_name, account_num, total_value,
 def _generate_summary_pdf_mpl(client_name, account_num, total_value,
                                lt_unreal, st_unreal, net_unreal, scenarios, logo_b64=None):
     """Matplotlib fallback PDF — used only when WeasyPrint is unavailable."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+
     _NAVY    = '#263759'
     _COPPER  = '#C17A49'
     _GREEN   = '#5D6B49'
