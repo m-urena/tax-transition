@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(/c/Users/MiguelUrena/anaconda3/python.exe:*)",
-      "Bash(\"C:\\\\Users\\\\MiguelUrena\\\\anaconda3\\\\python.exe\" -c \":*)"
+      "Bash(\"C:\\\\Users\\\\MiguelUrena\\\\anaconda3\\\\python.exe\" -c \":*)",
+      "Bash(python *)"
     ]
   }
 }

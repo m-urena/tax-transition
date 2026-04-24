@@ -13,10 +13,14 @@ import base64
 import io
 import datetime
 from pathlib import Path
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 try:
     from weasyprint import HTML as WeasyprintHTML
     _WEASYPRINT_OK = True
-except ImportError:
+except Exception:
     _WEASYPRINT_OK = False
 warnings.filterwarnings('ignore')
 
@@ -740,21 +744,37 @@ def generate_summary_html(client_name, account_num, total_value,
 
     return html.encode('utf-8')
 
-    # ── Header (white, gold bottom border) ──────────────────────────────────
+
+def _generate_summary_pdf_mpl(client_name, account_num, total_value,
+                               lt_unreal, st_unreal, net_unreal, scenarios, logo_b64=None):
+    """Matplotlib fallback PDF — used only when WeasyPrint is unavailable."""
+    _NAVY    = '#263759'
+    _COPPER  = '#C17A49'
+    _GREEN   = '#5D6B49'
+    _RED     = '#A93226'
+    _GRAY    = '#6B6B6B'
+    _LIGHT   = '#F4F4F5'
+    _WHITE   = '#FFFFFF'
+    _BORDER  = '#C8D0D8'
+    _DIVIDER = '#E2E8EE'
+
+    fig = plt.figure(figsize=(17, 11), facecolor=_LIGHT)
+
+    # ── Header ──────────────────────────────────────────────────────────────
     ax_hdr = fig.add_axes([0, 0.905, 1.0, 0.095])
     ax_hdr.set_facecolor(_WHITE)
     ax_hdr.axis('off')
     ax_hdr.axhline(y=0, color=_COPPER, linewidth=5, xmin=0, xmax=1)
 
-    # Logo top-left
     logo_placed = False
-    if logo_path and Path(logo_path).exists():
+    if logo_b64:
         try:
-            logo_img = plt.imread(str(logo_path))
-            imagebox = OffsetImage(logo_img, zoom=0.11)
-            ab = AnnotationBbox(imagebox, (0.075, 0.52),
-                                frameon=False, xycoords='axes fraction',
-                                box_alignment=(0.5, 0.5))
+            logo_data = base64.b64decode(logo_b64)
+            logo_buf  = io.BytesIO(logo_data)
+            logo_img  = plt.imread(logo_buf)
+            imagebox  = OffsetImage(logo_img, zoom=0.11)
+            ab = AnnotationBbox(imagebox, (0.075, 0.52), frameon=False,
+                                xycoords='axes fraction', box_alignment=(0.5, 0.5))
             ax_hdr.add_artist(ab)
             logo_placed = True
         except Exception:
@@ -763,16 +783,13 @@ def generate_summary_html(client_name, account_num, total_value,
         ax_hdr.text(0.02, 0.52, 'BISON WEALTH', color=_NAVY,
                     fontsize=13, fontweight='black', transform=ax_hdr.transAxes, va='center')
 
-    # Centre title
     ax_hdr.text(0.5, 0.70, 'Portfolio Transition Optimizer',
                 color=_NAVY, fontsize=19, fontweight='bold',
                 ha='center', va='center', transform=ax_hdr.transAxes)
     ax_hdr.text(0.5, 0.25, 'Tax-Efficient Rebalancing Analysis',
                 color=_GRAY, fontsize=10,
                 ha='center', va='center', transform=ax_hdr.transAxes)
-
-    # Client info top-right
-    ax_hdr.text(0.985, 0.70, client_name,
+    ax_hdr.text(0.985, 0.70, client_name or 'Client',
                 color=_NAVY, fontsize=12, fontweight='bold',
                 ha='right', va='center', transform=ax_hdr.transAxes)
     ax_hdr.text(0.985, 0.25,
@@ -782,15 +799,18 @@ def generate_summary_html(client_name, account_num, total_value,
 
     # ── Metric boxes ────────────────────────────────────────────────────────
     metrics = [
-        ('Portfolio Value',      f'${total_value:,.0f}',                                   _NAVY),
-        ('LT Unrealized G/L',    ('+' if lt_unreal  >= 0 else '-') + f'${abs(lt_unreal):,.0f}',  _GREEN if lt_unreal  >= 0 else _RED),
-        ('ST Unrealized G/L',    ('+' if st_unreal  >= 0 else '-') + f'${abs(st_unreal):,.0f}',  _GREEN if st_unreal  >= 0 else _RED),
-        ('Total Unrealized G/L', ('+' if net_unreal >= 0 else '-') + f'${abs(net_unreal):,.0f}', _GREEN if net_unreal >= 0 else _RED),
+        ('Portfolio Value',      f'${total_value:,.0f}', _NAVY),
+        ('LT Unrealized G/L',
+         ('+' if lt_unreal  >= 0 else '-') + f'${abs(lt_unreal):,.0f}',
+         _GREEN if lt_unreal  >= 0 else _RED),
+        ('ST Unrealized G/L',
+         ('+' if st_unreal  >= 0 else '-') + f'${abs(st_unreal):,.0f}',
+         _GREEN if st_unreal  >= 0 else _RED),
+        ('Total Unrealized G/L',
+         ('+' if net_unreal >= 0 else '-') + f'${abs(net_unreal):,.0f}',
+         _GREEN if net_unreal >= 0 else _RED),
     ]
-    MBW = 0.236   # metric box width
-    MBH = 0.082   # metric box height
-    MBY = 0.808   # metric boxes y (bottom)
-    MGP = 0.009   # gap between metric boxes
+    MBW = 0.236; MBH = 0.082; MBY = 0.808; MGP = 0.009
     for i, (label, value, vcolor) in enumerate(metrics):
         bx = 0.013 + i * (MBW + MGP)
         ax = fig.add_axes([bx, MBY, MBW, MBH])
@@ -798,26 +818,22 @@ def generate_summary_html(client_name, account_num, total_value,
         for sp in ax.spines.values():
             sp.set_edgecolor(_BORDER); sp.set_linewidth(0.8)
         ax.set_xticks([]); ax.set_yticks([])
-        ax.text(0.05, 0.72, label, color=_GRAY, fontsize=8.5, fontweight='bold',
+        ax.text(0.05, 0.72, label,  color=_GRAY,  fontsize=8.5, fontweight='bold',
                 transform=ax.transAxes, va='center')
-        ax.text(0.05, 0.25, value, color=vcolor, fontsize=16, fontweight='bold',
+        ax.text(0.05, 0.25, value,  color=vcolor, fontsize=16,  fontweight='bold',
                 transform=ax.transAxes, va='center')
 
     # ── Scenario cards ──────────────────────────────────────────────────────
-    CW   = 0.320   # card width
-    CGP  = 0.013   # gap
-    CX   = [0.013 + i * (CW + CGP) for i in range(3)]
+    CW  = 0.320; CGP = 0.013
+    CX  = [0.013 + i * (CW + CGP) for i in range(3)]
+    HDR_Y = 0.740; HDR_H = 0.054
+    SBY   = 0.415; SBH   = 0.325
+    LBY   = 0.375; LBH   = 0.033
+    DNY   = 0.065; DNH   = 0.305
 
-    # Vertical zones (figure coords, bottom=0)
-    HDR_Y = 0.740; HDR_H = 0.054      # coloured title strip
-    SBY   = 0.415; SBH   = 0.325      # white stats body  (sits below header)
-    LBY   = 0.375; LBH   = 0.033      # "TARGET ALIGNMENT" label row
-    DNY   = 0.065; DNH   = 0.305      # donut area (frameless)
-
-    for i, sc in enumerate(scenarios):
+    for i, sc in enumerate(scenarios[:3]):
         cx = CX[i]
 
-        # Coloured header strip
         ax_sh = fig.add_axes([cx, HDR_Y, CW, HDR_H])
         ax_sh.set_facecolor(sc['color'])
         ax_sh.axis('off')
@@ -825,7 +841,6 @@ def generate_summary_html(client_name, account_num, total_value,
                    color=_WHITE, fontsize=12, fontweight='bold',
                    ha='center', va='center', transform=ax_sh.transAxes)
 
-        # White stats body
         ax_sb = fig.add_axes([cx, SBY, CW, SBH])
         ax_sb.set_facecolor(_WHITE)
         for sp in ax_sb.spines.values():
@@ -851,7 +866,6 @@ def generate_summary_html(client_name, account_num, total_value,
                 ax_sb.axhline(y=y_val - 0.095, color=_DIVIDER,
                               linewidth=0.8, xmin=0.04, xmax=0.96)
 
-        # "TARGET ALIGNMENT" label — frameless
         ax_lbl = fig.add_axes([cx, LBY, CW, LBH])
         ax_lbl.set_facecolor(_LIGHT)
         ax_lbl.axis('off')
@@ -859,7 +873,6 @@ def generate_summary_html(client_name, account_num, total_value,
                     color=_GRAY, fontsize=7.5, fontweight='bold',
                     ha='center', va='center', transform=ax_lbl.transAxes)
 
-        # Donut — no frame, no axes, just the pie
         pad = CW * 0.18
         ax_pie = fig.add_axes([cx + pad, DNY, CW - 2*pad, DNH])
         ax_pie.set_aspect('equal')
@@ -880,13 +893,14 @@ def generate_summary_html(client_name, account_num, total_value,
     ax_ft.set_facecolor(_LIGHT)
     ax_ft.axis('off')
     ax_ft.text(0.5, 0.5,
-               'Illustrative purposes only. Tax estimates are approximations and may differ from actual liability. '
+               'Illustrative purposes only. Tax estimates are approximations '
+               'and may differ from actual liability. '
                'Consult a qualified tax advisor before transacting.',
                color=_GRAY, fontsize=8, ha='center', va='center',
                transform=ax_ft.transAxes, style='italic')
 
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+    fig.savefig(buf, format='pdf', bbox_inches='tight',
                 facecolor=_LIGHT, edgecolor='none')
     plt.close(fig)
     buf.seek(0)
@@ -895,11 +909,15 @@ def generate_summary_html(client_name, account_num, total_value,
 
 def generate_summary_pdf(client_name, account_num, total_value,
                          lt_unreal, st_unreal, net_unreal, scenarios, logo_b64=None):
-    """Convert the summary HTML to a PDF using WeasyPrint and return bytes."""
-    html_bytes = generate_summary_html(client_name, account_num, total_value,
-                                       lt_unreal, st_unreal, net_unreal,
-                                       scenarios, logo_b64=logo_b64)
-    return WeasyprintHTML(string=html_bytes.decode('utf-8')).write_pdf()
+    """WeasyPrint PDF (preferred); falls back to matplotlib if WeasyPrint unavailable."""
+    if _WEASYPRINT_OK:
+        html_bytes = generate_summary_html(client_name, account_num, total_value,
+                                           lt_unreal, st_unreal, net_unreal,
+                                           scenarios, logo_b64=logo_b64)
+        return WeasyprintHTML(string=html_bytes.decode('utf-8')).write_pdf()
+    return _generate_summary_pdf_mpl(client_name, account_num, total_value,
+                                     lt_unreal, st_unreal, net_unreal,
+                                     scenarios, logo_b64=logo_b64)
 
 
 def generate_trades_excel(scenario, account_num, holdings_df):
@@ -1308,31 +1326,17 @@ for col, sc in zip(cols, scenarios):
 # ── Export summary ─────────────────────────────────────────────────────────────
 st.markdown("<br>", unsafe_allow_html=True)
 if scenarios:
-    if _WEASYPRINT_OK:
-        pdf_bytes = generate_summary_pdf(
-            client_name, account_num, TOTAL_VALUE,
-            lt_unrealized, st_unrealized, net_unrealized, scenarios,
-            logo_b64=_logo_b64,
-        )
-        st.download_button(
-            label="Export Summary (PDF)",
-            data=pdf_bytes,
-            file_name=f"transition_summary_{client_name.replace(' ','_')}.pdf",
-            mime="application/pdf",
-        )
-    else:
-        html_bytes = generate_summary_html(
-            client_name, account_num, TOTAL_VALUE,
-            lt_unrealized, st_unrealized, net_unrealized, scenarios,
-            logo_b64=_logo_b64,
-        )
-        st.download_button(
-            label="Export Summary (HTML — open in browser, Ctrl+P to save as PDF)",
-            data=html_bytes,
-            file_name=f"transition_summary_{client_name.replace(' ','_')}.html",
-            mime="text/html",
-        )
-        st.caption("Install WeasyPrint for one-click PDF: `conda install -c conda-forge weasyprint`")
+    pdf_bytes = generate_summary_pdf(
+        client_name, account_num, TOTAL_VALUE,
+        lt_unrealized, st_unrealized, net_unrealized, scenarios,
+        logo_b64=_logo_b64,
+    )
+    st.download_button(
+        label="Export Summary (PDF)",
+        data=pdf_bytes,
+        file_name=f"transition_summary_{client_name.replace(' ','_')}.pdf",
+        mime="application/pdf",
+    )
 
 st.divider()
 

@@ -4,3 +4,5 @@ pandas
 plotly
 scipy
 openpyxl
+matplotlib
+weasyprint
