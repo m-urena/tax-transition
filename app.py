@@ -44,7 +44,7 @@ st.markdown(f"""<style>
   header[data-testid="stHeader"]     {{ display: none !important; }}
   .block-container                   {{ padding-top: 0rem !important; }}
   .bison-header {{
-    background-color:{WHITE}; border-bottom:3px solid {GOLD};
+    background-color:{WHITE}; border-bottom:3px solid {COPPER};
     padding:14px 24px; display:flex; justify-content:space-between;
     align-items:center; margin-bottom:24px; border-radius:0 0 4px 4px;
   }}
