@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from scipy.optimize import linprog
-import warnings
 import base64
 import io
 import datetime
@@ -16,9 +15,8 @@ from pathlib import Path
 try:
     from weasyprint import HTML as WeasyprintHTML
     _WEASYPRINT_OK = True
-except Exception:
+except ImportError:
     _WEASYPRINT_OK = False
-warnings.filterwarnings('ignore')
 
 # ── Logo ───────────────────────────────────────────────────────────────────────
 _logo_path = Path(__file__).parent / "Bison Wealth Logo.png"
@@ -31,16 +29,12 @@ st.set_page_config(page_title="Bison | Transition Optimizer",
 # ── Brand colors ───────────────────────────────────────────────────────────────
 NAVY    = '#263759'
 COPPER  = '#C17A49'
-OLIVE   = '#5D6B49'
 WHITE   = '#FFFFFF'
-GOLD    = COPPER
 GREEN   = '#5D6B49'
 RED     = '#A93226'
 GRAY    = '#6B6B6B'
-MUTED   = '#C7C6CA'
 LIGHT   = '#F4F4F5'
 CARD_BG = '#FFFFFF'
-BLUE    = NAVY
 
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown(f"""<style>
@@ -121,6 +115,24 @@ PRESET_MODELS = load_preset_models()
 
 # ── Default dummy holdings ─────────────────────────────────────────────────────
 _EMPTY_HOLDINGS = pd.DataFrame(columns=['Ticker','Shares','Price','Cost_Basis','Holding'])
+
+_EXAMPLE_HOLDINGS = pd.DataFrame([
+    {'Ticker': 'AAPL',  'Shares': 250, 'Price': 185.00, 'Cost_Basis': 130.00, 'Holding': 'LT'},
+    {'Ticker': 'MSFT',  'Shares': 150, 'Price': 415.00, 'Cost_Basis': 280.00, 'Holding': 'LT'},
+    {'Ticker': 'GOOGL', 'Shares': 100, 'Price': 175.00, 'Cost_Basis': 115.00, 'Holding': 'LT'},
+    {'Ticker': 'AMZN',  'Shares': 125, 'Price': 185.00, 'Cost_Basis': 145.00, 'Holding': 'LT'},
+    {'Ticker': 'NVDA',  'Shares':  75, 'Price': 875.00, 'Cost_Basis': 240.00, 'Holding': 'LT'},
+    {'Ticker': 'META',  'Shares': 100, 'Price': 505.00, 'Cost_Basis': 180.00, 'Holding': 'LT'},
+    {'Ticker': 'GE',    'Shares': 200, 'Price': 165.00, 'Cost_Basis':  90.00, 'Holding': 'LT'},
+    {'Ticker': 'XOM',   'Shares': 175, 'Price': 115.00, 'Cost_Basis':  75.00, 'Holding': 'LT'},
+    {'Ticker': 'JNJ',   'Shares': 150, 'Price': 155.00, 'Cost_Basis': 160.00, 'Holding': 'LT'},
+    {'Ticker': 'PG',    'Shares': 125, 'Price': 165.00, 'Cost_Basis': 130.00, 'Holding': 'LT'},
+    {'Ticker': 'TSLA',  'Shares': 100, 'Price': 175.00, 'Cost_Basis': 220.00, 'Holding': 'ST'},
+    {'Ticker': 'BAC',   'Shares': 500, 'Price':  38.00, 'Cost_Basis':  32.00, 'Holding': 'LT'},
+    {'Ticker': 'INTC',  'Shares': 300, 'Price':  31.00, 'Cost_Basis':  52.00, 'Holding': 'LT'},
+    {'Ticker': 'DIS',   'Shares': 200, 'Price': 108.00, 'Cost_Basis': 135.00, 'Holding': 'LT'},
+    {'Ticker': 'PFE',   'Shares': 350, 'Price':  28.00, 'Cost_Basis':  46.00, 'Holding': 'LT'},
+])
 
 DEFAULT_MODEL = pd.DataFrame({
     'Ticker': ['AAPL','MSFT','NVDA','GOOGL','AMZN'],
@@ -300,34 +312,8 @@ def solve_transition(holdings_df, tax_budget, target_model_df=None, total_value=
     }
 
 
-def compute_frontier(holdings_df, max_tax, target_model_df=None, total_value=None):
-    """Sweep 300 tax budgets and return the efficient frontier DataFrame."""
-    values     = np.array([float(v) for v in holdings_df['MarketValue']])
-    gains      = np.array([float(v) for v in holdings_df['UnrealizedGL']])
-    rates      = np.array([float(v) for v in holdings_df['TaxRate']])
-    tax_coeffs = gains * rates
-    n          = len(values)
-    total_val  = values.sum()
-    sweep_max  = max_tax * 1.02 if max_tax > 0 else 1.0
-    tv         = total_value if total_value is not None else float(total_val)
-    bounds     = _max_sell_bounds(holdings_df, target_model_df, tv)
-    points = []
-    for T in np.linspace(0, sweep_max, 300):
-        res = linprog(c=-values, A_ub=tax_coeffs.reshape(1, -1),
-                      b_ub=np.array([float(T)]), bounds=bounds, method='highs')
-        if res.success:
-            x = res.x
-            points.append({
-                'tax_incurred':   max(0.0, float(tax_coeffs @ x)),
-                'transition_pct': float(values @ x) / total_val * 100 if total_val > 0 else 0.0,
-                'realized_gl':    float(gains @ x),
-                'proceeds':       float(values @ x),
-            })
-    if not points:
-        return pd.DataFrame(columns=['tax_incurred', 'transition_pct', 'realized_gl', 'proceeds'])
-    return pd.DataFrame(points).drop_duplicates('transition_pct').reset_index(drop=True)
 
-
+@st.cache_data(show_spinner=False)
 def simulate_transition_timeline(holdings_df, annual_budget, target_model_df=None,
                                  total_value=None, max_years=25):
     """Simulate year-by-year transitions using a fixed annual tax budget.
@@ -452,9 +438,10 @@ def compute_buys(holdings_df, sell_fracs, target_model_df, total_portfolio_value
     return buy_df[['Ticker', 'Target Weight %', 'Actual Weight %', 'Buy Value']].reset_index(drop=True)
 
 
-def alignment_score(holdings_df, sell_fracs, target_model_df, total_portfolio_value):
+def alignment_score(holdings_df, sell_fracs, target_model_df, total_portfolio_value, buys_df=None):
     """
     Returns % of target portfolio that is already covered after the transition.
+    Pass buys_df to avoid recomputing it when it was already calculated by the caller.
     """
     if target_model_df is None or target_model_df.empty or total_portfolio_value == 0:
         return 0.0
@@ -465,11 +452,6 @@ def alignment_score(holdings_df, sell_fracs, target_model_df, total_portfolio_va
         kept_value = float(row['MarketValue']) * (1.0 - float(sell_fracs[i]))
         remaining[ticker] = remaining.get(ticker, 0.0) + kept_value
 
-    proceeds = sum(
-        float(holdings_df.iloc[i]['MarketValue']) * float(sell_fracs[i])
-        for i in range(len(holdings_df))
-    )
-
     covered = 0.0
     for _, trow in target_model_df.iterrows():
         ticker       = str(trow['Ticker']).strip()
@@ -477,8 +459,7 @@ def alignment_score(holdings_df, sell_fracs, target_model_df, total_portfolio_va
         current_val  = remaining.get(ticker, 0.0)
         covered     += min(current_val, target_val)
 
-    # Also count proceeds allocated to buy underweights
-    buy_df = compute_buys(holdings_df, sell_fracs, target_model_df, total_portfolio_value)
+    buy_df = buys_df if buys_df is not None else compute_buys(holdings_df, sell_fracs, target_model_df, total_portfolio_value)
     if not buy_df.empty:
         covered += buy_df['Buy Value'].sum()
 
@@ -500,35 +481,6 @@ def make_donut(pct, color):
     )
     return fig
 
-
-def make_frontier(frontier_df, scenarios):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=frontier_df['transition_pct'], y=frontier_df['tax_incurred'],
-        fill='tozeroy', fillcolor='rgba(38,55,89,0.07)',
-        line=dict(color=NAVY, width=2.5), name='Efficient Frontier',
-        hovertemplate='Transition: %{x:.1f}%<br>Tax: $%{y:,.0f}<extra></extra>',
-    ))
-    for sc in scenarios:
-        fig.add_trace(go.Scatter(
-            x=[sc['transition_pct']], y=[sc['net_tax']], mode='markers',
-            marker=dict(color=sc['color'], size=14, line=dict(color=WHITE, width=2.5)),
-            name=sc['name'],
-            hovertemplate=(f"<b>{sc['name']}</b><br>Transition: {sc['transition_pct']:.1f}%<br>"
-                           f"Tax: ${sc['net_tax']:,.0f}<br>G/L: ${sc['realized_gl']:,.0f}"
-                           "<extra></extra>"),
-        ))
-    fig.update_layout(
-        xaxis=dict(title='Portfolio Transitioned (%)', ticksuffix='%',
-                   gridcolor='#E8ECF0', linecolor='#D5DADE', zeroline=False),
-        yaxis=dict(title='Tax Liability ($)', tickprefix='$', tickformat=',.0f',
-                   gridcolor='#E8ECF0', linecolor='#D5DADE', zeroline=False),
-        height=380, plot_bgcolor=WHITE, paper_bgcolor=LIGHT,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02,
-                    xanchor='right', x=1, font=dict(size=11)),
-        margin=dict(l=70, r=20, t=10, b=50), hovermode='closest',
-    )
-    return fig
 
 
 def make_timeline_chart(timeline_data, annual_budget):
@@ -908,6 +860,7 @@ def _generate_summary_pdf_mpl(client_name, account_num, total_value,
     return buf.read()
 
 
+@st.cache_data(show_spinner=False)
 def generate_summary_pdf(client_name, account_num, total_value,
                          lt_unreal, st_unreal, net_unreal, scenarios, logo_b64=None):
     """WeasyPrint PDF (preferred); falls back to matplotlib if WeasyPrint unavailable."""
@@ -923,8 +876,6 @@ def generate_summary_pdf(client_name, account_num, total_value,
 
 def generate_trades_excel(scenario, account_num, holdings_df):
     """Build a trade order sheet: Account ID, Action, Ticker, Shares."""
-    price_lookup = {str(r['Ticker']).strip(): float(r['Price'])
-                    for _, r in holdings_df.iterrows()}
     rows = []
     # Sells — dollar amount = shares sold × price
     for i, row in holdings_df.iterrows():
@@ -1074,8 +1025,12 @@ with st.sidebar:
     # ── Holdings data ─────────────────────────────────────────────────────────
     st.divider()
     st.subheader("Holdings Data")
+    if st.button("Load Example", use_container_width=True):
+        st.session_state["data_source"] = "Edit table"
+        st.session_state.holdings_df = _EXAMPLE_HOLDINGS.copy()
+        st.rerun()
     data_source = st.radio("Source", ["Upload file", "Edit table"],
-                           label_visibility="collapsed")
+                           label_visibility="collapsed", key="data_source")
 
     # Initialize flag to prevent NameError
     _edit_holdings = False
@@ -1259,7 +1214,7 @@ for d in scenario_defs:
     if r:
         sc = {**d, **r}
         sc['buys']      = compute_buys(holdings, r['sell_fracs'], target_model, TOTAL_VALUE)
-        sc['alignment'] = alignment_score(holdings, r['sell_fracs'], target_model, TOTAL_VALUE)
+        sc['alignment'] = alignment_score(holdings, r['sell_fracs'], target_model, TOTAL_VALUE, buys_df=sc['buys'])
         scenarios.append(sc)
 
 
