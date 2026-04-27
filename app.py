@@ -1027,6 +1027,7 @@ with st.sidebar:
     st.subheader("Holdings Data")
     if st.button("Load Example", use_container_width=True):
         st.session_state["example_loaded"] = True
+        st.session_state["data_source"] = "Upload file"
         st.rerun()
     data_source = st.radio("Source", ["Upload file", "Edit table"],
                            label_visibility="collapsed", key="data_source")
