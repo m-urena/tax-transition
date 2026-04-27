@@ -1026,8 +1026,7 @@ with st.sidebar:
     st.divider()
     st.subheader("Holdings Data")
     if st.button("Load Example", use_container_width=True):
-        st.session_state["data_source"] = "Edit table"
-        st.session_state.holdings_df = _EXAMPLE_HOLDINGS.copy()
+        st.session_state["example_loaded"] = True
         st.rerun()
     data_source = st.radio("Source", ["Upload file", "Edit table"],
                            label_visibility="collapsed", key="data_source")
@@ -1045,6 +1044,7 @@ with st.sidebar:
         uploaded = st.file_uploader("Holdings file", type=["csv", "xlsx", "xls"],
                                     label_visibility="collapsed")
         if uploaded:
+            st.session_state["example_loaded"] = False
             fname = uploaded.name.lower()
             if fname.endswith(('.xlsx', '.xls')):
                 xl  = pd.ExcelFile(uploaded)
@@ -1066,6 +1066,9 @@ with st.sidebar:
                         header_row = i
                         break
                 raw = pd.read_csv(uploaded, skiprows=header_row)
+        elif st.session_state.get("example_loaded"):
+            raw = _EXAMPLE_HOLDINGS.copy()
+            st.caption("Example data loaded.")
         else:
             raw = _EMPTY_HOLDINGS.copy()
 
