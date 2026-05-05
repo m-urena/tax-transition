@@ -1390,23 +1390,15 @@ for tab, sc in zip(tabs, scenarios):
                 else:
                     st.info("No buys needed — portfolio already aligned with target model.")
 
-
-# ── Export trades ──────────────────────────────────────────────────────────────
-if scenarios:
-    st.divider()
-    exp_c1, exp_c2 = st.columns([2, 3])
-    with exp_c1:
-        sc_names  = [sc['name'] for sc in scenarios]
-        sc_choice = st.selectbox("Scenario", sc_names, label_visibility="collapsed")
-    with exp_c2:
-        sc_sel      = next(sc for sc in scenarios if sc['name'] == sc_choice)
-        excel_bytes = generate_trades_excel(sc_sel, account_num, holdings)
+        # ── Export trades (scoped to this tab's scenario) ───────────────────
+        st.divider()
+        excel_bytes = generate_trades_excel(sc, account_num, holdings)
         st.download_button(
-            label=f"Export Trades — {sc_choice} (Excel)",
+            label=f"Export Trades — {sc['name']} (Excel)",
             data=excel_bytes,
-            file_name=f"trades_{sc_choice.replace(' ','_')}_{account_num}.xlsx",
+            file_name=f"trades_{sc['name'].replace(' ','_')}_{account_num}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            key=f"export_trades_{sc['name']}",
         )
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
